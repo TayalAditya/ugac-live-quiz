@@ -1,0 +1,20 @@
+services:
+  quiz:
+    build: .
+    container_name: ugac-live-quiz
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:5010:5001"
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/healthz')"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

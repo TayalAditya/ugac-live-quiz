@@ -4,7 +4,6 @@ import uuid
 import logging
 import time
 import threading
-import queue
 from io import BytesIO
 from base64 import b64encode
 from datetime import datetime
@@ -15,35 +14,70 @@ logger = logging.getLogger(__name__)
 
 from flask import Flask, render_template, request, session, redirect, url_for, jsonify, send_file, Response
 from flask_socketio import SocketIO, emit, join_room
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, JSON, Float, text
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, JSON, Float, UniqueConstraint, text
 from sqlalchemy.orm import declarative_base, sessionmaker
+from werkzeug.middleware.proxy_fix import ProxyFix
 import qrcode
 
 app = Flask(__name__, template_folder='.')
-app.secret_key = os.environ.get('SECRET_KEY', 'cs671-viva-g27')
-app.config['SESSION_COOKIE_DOMAIN'] = False
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
+APP_ENV = os.environ.get('APP_ENV', 'development')
+IS_PRODUCTION = APP_ENV == 'production'
+
+if IS_PRODUCTION and not os.environ.get('SECRET_KEY'):
+    raise RuntimeError('SECRET_KEY must be set when APP_ENV=production.')
+if IS_PRODUCTION and not os.environ.get('ADMIN_PASSWORD'):
+    raise RuntimeError('ADMIN_PASSWORD must be set when APP_ENV=production.')
+
+app.secret_key = os.environ.get('SECRET_KEY', 'development-only-secret')
+app.config['SESSION_COOKIE_DOMAIN'] = None
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['SESSION_COOKIE_SECURE'] = False
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading',
-                    ping_timeout=60, ping_interval=25, max_http_buffer_size=1_000_000)
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get(
+    'SESSION_COOKIE_SECURE', 'true' if IS_PRODUCTION else 'false'
+).lower() == 'true'
 
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'samiscrazy')
-
-DB_PATH = os.environ.get('DB_PATH', 'quiz_platform.db')
-engine = create_engine(
-    f'sqlite:///{DB_PATH}',
-    connect_args={"check_same_thread": False, "timeout": 30},
-    pool_size=10, max_overflow=20, pool_timeout=30, pool_pre_ping=True
+socket_cors_origins = os.environ.get('SOCKETIO_CORS_ORIGINS')
+socketio = SocketIO(
+    app,
+    cors_allowed_origins=socket_cors_origins.split(',') if socket_cors_origins else None,
+    async_mode=os.environ.get('SOCKETIO_ASYNC_MODE', 'threading'),
+    ping_timeout=60,
+    ping_interval=25,
+    max_http_buffer_size=1_000_000,
 )
-with engine.connect() as conn:
-    conn.execute(text("PRAGMA journal_mode=WAL"))
-    conn.execute(text("PRAGMA synchronous=NORMAL"))
-    conn.execute(text("PRAGMA cache_size=10000"))
-    conn.execute(text("PRAGMA temp_store=MEMORY"))
-    conn.commit()
+
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'development-only-password')
+
+
+def _database_url():
+    database_url = os.environ.get('DATABASE_URL')
+    if not database_url:
+        db_path = os.environ.get('DB_PATH', 'quiz_platform.db')
+        return f'sqlite:///{db_path}'
+    if database_url.startswith('postgres://'):
+        return database_url.replace('postgres://', 'postgresql+psycopg://', 1)
+    if database_url.startswith('postgresql://'):
+        return database_url.replace('postgresql://', 'postgresql+psycopg://', 1)
+    return database_url
+
+
+DATABASE_URL = _database_url()
+engine_options = dict(pool_size=10, max_overflow=20, pool_timeout=30, pool_pre_ping=True)
+if DATABASE_URL.startswith('sqlite'):
+    engine_options['connect_args'] = {'check_same_thread': False, 'timeout': 30}
+
+engine = create_engine(DATABASE_URL, **engine_options)
+if DATABASE_URL.startswith('sqlite'):
+    with engine.connect() as conn:
+        conn.execute(text('PRAGMA journal_mode=WAL'))
+        conn.execute(text('PRAGMA synchronous=NORMAL'))
+        conn.execute(text('PRAGMA cache_size=10000'))
+        conn.execute(text('PRAGMA temp_store=MEMORY'))
+        conn.commit()
 
 Base = declarative_base()
-SessionLocal = sessionmaker(bind=engine)
+SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 class Quiz(Base):
     __tablename__ = 'quizzes'
@@ -71,6 +105,7 @@ class QuizSession(Base):
 
 class Answer(Base):
     __tablename__ = 'answers'
+    __table_args__ = (UniqueConstraint('session_id', 'question_id', name='uq_answer_session_question'),)
     id = Column(String(36), primary_key=True)
     quiz_id = Column(String(36), nullable=False)
     session_id = Column(String(36), nullable=False)
@@ -133,20 +168,6 @@ def _prime_lb_cache(quiz_id):
                                           'speed_points': s.speed_points, 'strikes': s.strikes}
 
 # ─── ASYNC WRITE QUEUE ─────────────────────────────────────────────────────────
-_write_queue = queue.Queue()
-
-def _write_worker():
-    while True:
-        fn = _write_queue.get()
-        try:
-            fn()
-        except Exception as e:
-            logger.error(f"Write error: {e}")
-        finally:
-            _write_queue.task_done()
-
-threading.Thread(target=_write_worker, daemon=True).start()
-
 # ─── HELPERS ───────────────────────────────────────────────────────────────────
 
 def gen_pin():
@@ -207,11 +228,30 @@ def _get_correct_answer_str(q):
         return ', '.join(opts[i] for i in idxs if i < len(opts))
     return ''
 
+
+def _public_question(question):
+    """Return the student-safe portion of a question."""
+    return {
+        key: value
+        for key, value in question.items()
+        if key not in {'correct_option', 'correct_options', 'correct_answer'}
+    }
+
+
+def _quiz_join_url(pin):
+    return url_for('index', pin=pin, _external=True)
+
 # ─── ROUTES - STUDENT ──────────────────────────────────────────────────────────
 
 @app.route('/')
 def index():
     return render_template('login.html', prefill_pin=request.args.get('pin', ''), error=None)
+
+
+@app.get('/healthz')
+def healthz():
+    return jsonify({'ok': True})
+
 
 @app.route('/join', methods=['GET', 'POST'])
 def join():
@@ -254,7 +294,7 @@ def join():
     session.update({'session_id': sess_id, 'quiz_id': quiz_id, 'username': username, 'resuming': False})
     return redirect(url_for('quiz_page'))
 
-@app.route('/quiz')
+@app.route('/play')
 def quiz_page():
     if 'session_id' not in session:
         return redirect(url_for('index'))
@@ -288,65 +328,79 @@ def submit():
     if 'session_id' not in session:
         return jsonify({'error': 'not logged in'}), 401
 
-    data = request.get_json()
-    q_id = int(data.get('question_id'))
-    user_answer = data.get('answer', '')
-    time_taken = float(data.get('time_taken', 0))
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Invalid request body'}), 400
+    try:
+        q_id = int(data.get('question_id'))
+        time_taken = float(data.get('time_taken', 0))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Invalid answer'}), 400
+    user_answer = str(data.get('answer', ''))
     sess_id = session['session_id']
     quiz_id = session['quiz_id']
     username = session['username']
 
     db = SessionLocal()
-    quiz = db.query(Quiz).filter(Quiz.id == quiz_id).first()
-    if not quiz or q_id >= len(quiz.questions_data):
+    try:
+        quiz = db.query(Quiz).filter(Quiz.id == quiz_id).first()
+        qs = db.query(QuizSession).filter(QuizSession.id == sess_id).first()
+        if not quiz or not qs or qs.completed_at:
+            return jsonify({'error': 'Invalid session'}), 400
+        if q_id < 0 or q_id >= len(quiz.questions_data):
+            return jsonify({'error': 'Invalid question'}), 400
+        if quiz.state != 'running' or quiz.active_question_id != q_id:
+            return jsonify({'error': 'Question is not open'}), 409
+
+        existing_ans = db.query(Answer).filter(
+            Answer.session_id == sess_id, Answer.question_id == q_id
+        ).first()
+        if existing_ans:
+            return jsonify({
+                'ok': True,
+                'is_correct': existing_ans.is_correct,
+                'already': True,
+                'speed_points': existing_ans.speed_points,
+            })
+
+        q = quiz.questions_data[q_id]
+        is_correct, partial_score, any_wrong = check_answer_detailed(q, user_answer)
+        speed_points = calc_speed_points(time_taken, q.get('time_limit')) if not any_wrong else 0
+        db.add(Answer(
+            id=str(uuid.uuid4()),
+            quiz_id=quiz_id,
+            session_id=sess_id,
+            question_id=q_id,
+            user_answer=user_answer,
+            is_correct=is_correct,
+            partial_score=partial_score,
+            speed_points=speed_points,
+            time_taken=time_taken,
+            answered_at=datetime.utcnow(),
+        ))
+        if is_correct:
+            qs.correct_count += 1
+        qs.speed_points += speed_points
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing_ans = db.query(Answer).filter(
+            Answer.session_id == sess_id, Answer.question_id == q_id
+        ).first()
+        if existing_ans:
+            return jsonify({
+                'ok': True,
+                'is_correct': existing_ans.is_correct,
+                'already': True,
+                'speed_points': existing_ans.speed_points,
+            })
+        raise
+    finally:
         db.close()
-        return jsonify({'error': 'Invalid'}), 400
 
-    existing_ans = db.query(Answer).filter(
-        Answer.session_id == sess_id, Answer.question_id == q_id).first()
-    if existing_ans:
-        spd = existing_ans.speed_points
-        ic = existing_ans.is_correct
-        db.close()
-        return jsonify({'ok': True, 'is_correct': ic, 'already': True, 'speed_points': spd})
-
-    q = quiz.questions_data[q_id]
-    db.close()
-
-    is_correct, partial_score, any_wrong = check_answer_detailed(q, user_answer)
-    spd = calc_speed_points(time_taken, q.get('time_limit')) if not any_wrong else 0
-
-    with _lb_lock:
-        entry = _lb_cache[quiz_id].get(sess_id, {'username': username, 'correct': 0, 'speed_points': 0, 'strikes': 0})
-    new_correct = entry['correct'] + (1 if is_correct else 0)
-    new_speed = entry['speed_points'] + spd
-    _lb_update(quiz_id, sess_id, username, new_correct, new_speed, entry['strikes'])
-    # Emit immediately so first correct answer shows up right away
+    _lb_update(quiz_id, sess_id, username, qs.correct_count, qs.speed_points, qs.strikes)
     socketio.emit('leaderboard_update', {'leaderboard': _get_sorted_lb(quiz_id)}, room=quiz_id)
-
-    answer_id, now = str(uuid.uuid4()), datetime.utcnow()
-
-    def _write():
-        db2 = SessionLocal()
-        try:
-            db2.add(Answer(id=answer_id, quiz_id=quiz_id, session_id=sess_id,
-                           question_id=q_id, user_answer=user_answer,
-                           is_correct=is_correct, partial_score=partial_score,
-                           speed_points=spd, time_taken=time_taken, answered_at=now))
-            qs = db2.query(QuizSession).filter(QuizSession.id == sess_id).first()
-            if qs:
-                if is_correct:
-                    qs.correct_count += 1
-                qs.speed_points += spd
-            db2.commit()
-        except Exception as e:
-            db2.rollback()
-            logger.error(f"Submit write: {e}")
-        finally:
-            db2.close()
-
-    _write_queue.put(_write)
-    return jsonify({'ok': True, 'is_correct': is_correct, 'speed_points': spd})
+    return jsonify({'ok': True, 'is_correct': is_correct, 'speed_points': speed_points})
 
 @app.route('/strike', methods=['POST'])
 def log_strike():
@@ -354,43 +408,49 @@ def log_strike():
         return jsonify({'strikes': 0}), 401
 
     data = request.get_json(silent=True) or {}
-    q_id = data.get('question_id')
+    try:
+        q_id = int(data.get('question_id'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Invalid question'}), 400
     sess_id = session['session_id']
     quiz_id = session['quiz_id']
     username = session['username']
+    db = SessionLocal()
+    try:
+        quiz = db.query(Quiz).filter(Quiz.id == quiz_id).first()
+        qs = db.query(QuizSession).filter(QuizSession.id == sess_id).first()
+        if not quiz or not qs or qs.completed_at:
+            return jsonify({'error': 'Invalid session'}), 400
+        if quiz.state != 'running' or quiz.active_question_id != q_id:
+            return jsonify({'error': 'Question is not open'}), 409
 
-    with _lb_lock:
-        entry = _lb_cache[quiz_id].get(sess_id, {'username': username, 'correct': 0, 'speed_points': 0, 'strikes': 0})
-        new_strikes = entry['strikes'] + 1
-        _lb_cache[quiz_id][sess_id] = {**entry, 'strikes': new_strikes}
-        _lb_pending.add(quiz_id)
+        existing_answer = db.query(Answer).filter(
+            Answer.session_id == sess_id, Answer.question_id == q_id
+        ).first()
+        if existing_answer:
+            return jsonify({'strikes': qs.strikes, 'terminate': False, 'already': True})
+
+        qs.strikes += 1
+        db.add(Answer(
+            id=str(uuid.uuid4()),
+            quiz_id=quiz_id,
+            session_id=sess_id,
+            question_id=q_id,
+            user_answer='[strike]',
+            is_correct=False,
+            partial_score=0,
+            speed_points=0,
+            time_taken=None,
+            strike_on_question=True,
+            answered_at=datetime.utcnow(),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    _lb_update(quiz_id, sess_id, username, qs.correct_count, qs.speed_points, qs.strikes)
     socketio.emit('leaderboard_update', {'leaderboard': _get_sorted_lb(quiz_id)}, room=quiz_id)
-
-    answer_id, now = str(uuid.uuid4()), datetime.utcnow()
-
-    def _write():
-        db2 = SessionLocal()
-        try:
-            qs = db2.query(QuizSession).filter(QuizSession.id == sess_id).first()
-            if qs:
-                qs.strikes += 1
-            if q_id is not None:
-                exists = db2.query(Answer).filter(
-                    Answer.session_id == sess_id, Answer.question_id == int(q_id)).first()
-                if not exists:
-                    db2.add(Answer(id=answer_id, quiz_id=quiz_id, session_id=sess_id,
-                                   question_id=int(q_id), user_answer='[strike]',
-                                   is_correct=False, partial_score=0, speed_points=0,
-                                   time_taken=None, strike_on_question=True, answered_at=now))
-            db2.commit()
-        except Exception as e:
-            db2.rollback()
-            logger.error(f"Strike write: {e}")
-        finally:
-            db2.close()
-
-    _write_queue.put(_write)
-    return jsonify({'strikes': new_strikes, 'terminate': False})
+    return jsonify({'strikes': qs.strikes, 'terminate': False})
 
 @app.route('/result')
 def result():
@@ -461,7 +521,7 @@ def live_view(quiz_id):
     if not quiz:
         db.close()
         return redirect(url_for('admin_dashboard'))
-    join_url = request.host_url.rstrip('/') + f'/?pin={quiz.pin}'
+    join_url = _quiz_join_url(quiz.pin)
     qr_b64 = gen_qr(join_url)
     quiz_data = {
         'id': quiz.id,
@@ -485,7 +545,7 @@ def create_quiz():
     except:
         questions = []
     pin, quiz_id = gen_pin(), str(uuid.uuid4())
-    join_url = request.host_url.rstrip('/') + f'/?pin={pin}'
+    join_url = _quiz_join_url(pin)
     qr_b64 = gen_qr(join_url)
     db = SessionLocal()
     db.add(Quiz(id=quiz_id, title=title, pin=pin,
@@ -501,10 +561,10 @@ def open_question(quiz_id, q_id):
         return '', 403
     db = SessionLocal()
     quiz = db.query(Quiz).filter(Quiz.id == quiz_id).first()
-    if not quiz or q_id >= len(quiz.questions_data):
+    if not quiz or q_id < 0 or q_id >= len(quiz.questions_data):
         db.close()
         return '', 400
-    qdata = quiz.questions_data[q_id]
+    qdata = _public_question(quiz.questions_data[q_id])
     quiz.active_question_id = q_id
     quiz.active_question_open_time = datetime.utcnow()
     quiz.state = 'running'
@@ -704,6 +764,9 @@ def delete_user_responses(quiz_id, username):
 @socketio.on('join_quiz')
 def on_join_quiz(data):
     quiz_id = data.get('quiz_id')
+    if not quiz_id or (not session.get('admin') and session.get('quiz_id') != quiz_id):
+        emit('error', {'error': 'Unauthorized quiz room'})
+        return
     join_room(quiz_id)
     _prime_lb_cache(quiz_id)
     emit('joined', {'ok': True})
@@ -711,6 +774,9 @@ def on_join_quiz(data):
 @socketio.on('get_leaderboard')
 def on_get_leaderboard(data):
     quiz_id = data.get('quiz_id')
+    if not quiz_id or (not session.get('admin') and session.get('quiz_id') != quiz_id):
+        emit('error', {'error': 'Unauthorized quiz room'})
+        return
     _prime_lb_cache(quiz_id)
     emit('leaderboard_update', {'leaderboard': _get_sorted_lb(quiz_id)})
 

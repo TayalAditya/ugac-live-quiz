@@ -46,7 +46,7 @@
         <div class="card-sub">Enter the admin password to open the dashboard.</div>
         <div class="badge">Restricted area</div>
         {% if error %}<div class="error-box">{{ error }}</div>{% endif %}
-        <form action="/admin/login" method="POST">
+        <form action="{{ url_for('admin_login') }}" method="POST">
             <div class="field">
                 <label for="password">Password</label>
                 <input type="password" id="password" name="password" required autofocus>
@@ -54,7 +54,7 @@
             <button class="btn" type="submit">Enter Dashboard →</button>
         </form>
     </div>
-    <a class="back-link" href="/">← Back to student join</a>
+    <a class="back-link" href="{{ url_for('index') }}">← Back to student join</a>
 </div>
 </body>
-</html> 
+</html>

@@ -46,7 +46,7 @@
         <div class="card-title">Join a quiz</div>
         <div class="card-sub">Get the PIN from your teacher, enter your name or student ID below.</div>
         {% if error %}<div class="error-box">{{ error }}</div>{% endif %}
-        <form action="/join" method="POST" id="joinForm">
+        <form action="{{ url_for('join') }}" method="POST" id="joinForm">
             <div class="field">
                 <label for="quiz_pin">Quiz PIN</label>
                 <input type="text" id="quiz_pin" name="quiz_pin" required placeholder="ABC123" maxlength="6" value="{{ prefill_pin }}" autocomplete="off" spellcheck="false">

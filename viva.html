@@ -424,12 +424,19 @@ function toggleLb() {
     document.getElementById('lbToggleIcon').textContent = lbOpen ? '▲' : '▼';
 }
 
-const socket = io({ reconnection: true, reconnectionAttempts: Infinity, reconnectionDelay: 1000 });
+const appBasePath = {{ url_for('index') | tojson }}.replace(/\/$/, '');
+const apiUrl = (path) => appBasePath + path;
+const socket = io({
+    path: (appBasePath || '') + '/socket.io',
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000
+});
 
 let answersReady = false;
 let pendingQuestion = null;
 
-fetch('/my_answers').then(function(r) { return r.json(); }).then(function(ids) {
+fetch(apiUrl('/my_answers')).then(function(r) { return r.json(); }).then(function(ids) {
     ids.forEach(function(id) { answeredQuestions.add(Number(id)); answeredQuestions.add(String(id)); });
     answersReady = true;
     if (pendingQuestion) { handleQuestionOpened(pendingQuestion); pendingQuestion = null; }
@@ -612,7 +619,7 @@ function submitAnswer() {
     var btn = document.getElementById('submitBtn');
     if (btn) btn.disabled = true;
 
-    fetch('/submit', {
+    fetch(apiUrl('/submit'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question_id: qId, answer: answer, time_taken: timeTaken })
@@ -670,7 +677,7 @@ document.addEventListener('visibilitychange', function() {
             '<div class="result-sub" style="margin-top:0.5rem">Tab switch detected. This question is marked incorrect.</div>' +
             '<div class="result-sub" style="margin-top:0.25rem">You can continue with the next question.</div>' +
             '</div>';
-        fetch('/strike', {
+        fetch(apiUrl('/strike'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ question_id: qId })

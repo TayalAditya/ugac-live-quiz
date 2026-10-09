@@ -574,7 +574,7 @@
         <div class="status-pill idle" id="statusPill">Idle</div>
     </div>
     <div class="topbar-right">
-        <a href="/admin" class="btn-sm">← Dashboard</a>
+        <a href="{{ url_for('admin_dashboard') }}" class="btn-sm">← Dashboard</a>
     </div>
 </div>
 
@@ -648,7 +648,9 @@ document.getElementById('joinUrlDisplay').textContent = joinUrl;
 document.getElementById('qrImg').src = qrB64 ? 'data:image/png;base64,' + qrB64
     : 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(joinUrl);
 
-const socket = io();
+const appBasePath = {{ url_for('index') | tojson }}.replace(/\/$/, '');
+const apiUrl = (path) => appBasePath + path;
+const socket = io({ path: (appBasePath || '') + '/socket.io' });
 let activeQId = quizData.active_question_id;
 let answerCounts = {};
 let lastQuestion = null;
@@ -711,7 +713,7 @@ function renderQControls() {
 renderQControls();
 
 function openQ(qId) {
-    fetch('/admin/quiz/' + quizId + '/question/open/' + qId, { method: 'POST' })
+    fetch(apiUrl('/admin/quiz/' + quizId + '/question/open/' + qId), { method: 'POST' })
         .then(function(r) { return r.json(); })
         .then(function() {
             activeQId = qId;
@@ -723,7 +725,7 @@ function openQ(qId) {
 function closeQ() {
     var qIdToClose = activeQId;
     var qToReveal = lastQuestion;
-    fetch('/admin/quiz/' + quizId + '/question/close', { method: 'POST' })
+    fetch(apiUrl('/admin/quiz/' + quizId + '/question/close'), { method: 'POST' })
         .then(function(r) { return r.json(); })
         .then(function(data) {
             // Show answer reveal immediately when admin clicks close

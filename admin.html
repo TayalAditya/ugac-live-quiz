@@ -125,7 +125,7 @@
     <div class="brand">Live<span>_Q</span></div>
     <div class="topbar-right">
         <span class="topbar-label">Admin Dashboard</span>
-        <a href="/admin/logout" class="btn-logout">Log out</a>
+        <a href="{{ url_for('admin_logout') }}" class="btn-logout">Log out</a>
     </div>
 </div>
 
@@ -219,13 +219,16 @@
 </div>
 
 <script>
-const socket = io();
+const appBasePath = {{ url_for('index') | tojson }}.replace(/\/$/, '');
+const joinBaseUrl = {{ url_for('index', _external=True) | tojson }};
+const apiUrl = (path) => appBasePath + path;
+const socket = io({ path: (appBasePath || '') + '/socket.io' });
 let activeQuiz = null;
 let allQuizzes = {{ quizzes | tojson }};
 
 socket.on('connect', () => {
     // Refresh quiz states from server on connect
-    fetch('/admin/quizzes').then(r => r.json()).then(data => {
+    fetch(apiUrl('/admin/quizzes')).then(r => r.json()).then(data => {
         data.forEach(fresh => {
             const q = allQuizzes.find(x => x.id === fresh.id);
             if (q) { q.state = fresh.state; q.active_question_id = fresh.active_question_id; }
@@ -269,7 +272,7 @@ function createQuiz() {
     const form = new FormData();
     form.append('title', title);
     form.append('questions_json', qstr);
-    fetch('/admin/quiz/new', { method: 'POST', body: form })
+    fetch(apiUrl('/admin/quiz/new'), { method: 'POST', body: form })
         .then(r => r.json())
         .then(data => {
             const q = { id: data.quiz_id, title, pin: data.pin, state: 'idle', questions_data: questions, active_question_id: null };
@@ -284,7 +287,7 @@ function createQuiz() {
 
 function openQuiz(id) {
     const q = allQuizzes.find(x => x.id === id);
-    const url = window.location.origin + `/?pin=${q.pin}`;
+    const url = joinBaseUrl + '?pin=' + encodeURIComponent(q.pin);
     openQuizFull(q, null, url);
 }
 
@@ -325,14 +328,14 @@ function renderQuestions(questions, activeQId, quizId) {
 }
 
 function openQ(quizId, qId) {
-    fetch(`/admin/quiz/${quizId}/question/open/${qId}`, { method: 'POST' }).then(() => {
+    fetch(apiUrl('/admin/quiz/' + quizId + '/question/open/' + qId), { method: 'POST' }).then(() => {
         const q = allQuizzes.find(x => x.id === quizId);
         if (q) { q.active_question_id = qId; q.state = 'running'; renderQuestions(q.questions_data, qId, quizId); renderGrid(); }
     });
 }
 
 function closeQ(quizId) {
-    fetch(`/admin/quiz/${quizId}/question/close`, { method: 'POST' }).then(() => {
+    fetch(apiUrl('/admin/quiz/' + quizId + '/question/close'), { method: 'POST' }).then(() => {
         const q = allQuizzes.find(x => x.id === quizId);
         if (q) { q.active_question_id = null; q.state = 'idle'; renderQuestions(q.questions_data, null, quizId); renderGrid(); }
     });
@@ -344,18 +347,22 @@ function renderLB(board) {
         : board.slice(0,20).map((p,i) => `
             <tr>
                 <td class="lb-rank">${i+1}</td>
-                <td class="lb-name">${p.username}</td>
+                <td class="lb-name">${escHtml(p.username)}</td>
                 <td class="lb-correct">${p.correct}</td>
                 <td class="lb-num">${p.speed_points}</td>
                 <td class="lb-num">${p.strikes}</td>
             </tr>`).join('');
 }
 
-function exportStats() { if (activeQuiz) window.open(`/admin/quiz/${activeQuiz}/export`, '_blank'); }
+function exportStats() { if (activeQuiz) window.open(apiUrl('/admin/quiz/' + activeQuiz + '/export'), '_blank'); }
+
+function escHtml(value) {
+    return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 
 function deleteQuiz(quizId, title) {
     if (!confirm('Delete quiz "' + title + '"?\n\nThis will permanently remove the quiz and all student responses. This cannot be undone.')) return;
-    fetch('/admin/quiz/' + quizId + '/delete', { method: 'POST' })
+    fetch(apiUrl('/admin/quiz/' + quizId + '/delete'), { method: 'POST' })
         .then(function(r) { return r.json(); })
         .then(function() {
             allQuizzes = allQuizzes.filter(function(q) { return q.id !== quizId; });
@@ -366,7 +373,7 @@ function deleteQuiz(quizId, title) {
 
 function deleteAllQuizzes() {
     if (!confirm('Delete ALL quizzes?\n\nThis removes every quiz and all student responses permanently. This cannot be undone.')) return;
-    fetch('/admin/quiz/delete_all', { method: 'POST' })
+    fetch(apiUrl('/admin/quiz/delete_all'), { method: 'POST' })
         .then(function(r) { return r.json(); })
         .then(function() {
             allQuizzes = [];
@@ -379,7 +386,7 @@ function deleteAllQuizzes() {
 function deleteUser(username) {
     if (!activeQuiz) return;
     if (!confirm('Delete all responses from "' + username + '"?\n\nThis removes their session and answers from this quiz. This cannot be undone.')) return;
-    fetch('/admin/quiz/' + activeQuiz + '/user/' + encodeURIComponent(username) + '/delete', { method: 'POST' })
+    fetch(apiUrl('/admin/quiz/' + activeQuiz + '/user/' + encodeURIComponent(username) + '/delete'), { method: 'POST' })
         .then(function(r) { return r.json(); })
         .then(function() {
             socket.emit('get_leaderboard', { quiz_id: activeQuiz });
@@ -390,7 +397,7 @@ function openLiveView() {
     if (!activeQuiz) return;
     const q = allQuizzes.find(x => x.id === activeQuiz);
     if (!q) return;
-    const url = window.location.origin + '/admin/live/' + activeQuiz;
+    const url = apiUrl('/admin/live/' + activeQuiz);
     window.open(url, '_blank', 'noopener');
 }
 
