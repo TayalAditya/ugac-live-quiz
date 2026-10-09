@@ -1,0 +1,12 @@
+# Add this above the final SPA `handle` block in the existing UGAC Caddyfile.
+@quiz_root path /quiz
+redir @quiz_root /quiz/ permanent
+
+# Caddy forwards WebSocket upgrades automatically, including Socket.IO.
+handle_path /quiz/* {
+    reverse_proxy live-quiz:5001 {
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-Prefix /quiz
+    }
+}

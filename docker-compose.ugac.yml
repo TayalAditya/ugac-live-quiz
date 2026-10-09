@@ -1,0 +1,11 @@
+services:
+  quiz:
+    networks:
+      ugac-network:
+        aliases:
+          - live-quiz
+
+networks:
+  ugac-network:
+    external: true
+    name: ${UGAC_DOCKER_NETWORK:-ugac-internal}

@@ -5,6 +5,14 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$UserName,
 
+    [int]$Port = 22,
+
+    [string]$JumpHost = '',
+
+    [string]$JumpUser = '',
+
+    [int]$JumpPort = 22,
+
     [string]$Branch = 'deploy/ugac',
     [string]$RemoteDirectory = ''
 )
@@ -23,4 +31,14 @@ if ($RemoteDirectory) {
 $remoteCommand = "$environmentArguments bash -s"
 $bootstrapScript = Join-Path $PSScriptRoot 'server-bootstrap.sh'
 
-Get-Content -Raw $bootstrapScript | ssh "$UserName@$HostName" $remoteCommand
+$sshArguments = @('-p', $Port)
+if ($JumpHost) {
+    if (-not $JumpUser) {
+        throw 'JumpUser is required when JumpHost is provided.'
+    }
+
+    $sshArguments += @('-J', "$JumpUser@$JumpHost`:$JumpPort")
+}
+
+$sshArguments += "$UserName@$HostName", $remoteCommand
+Get-Content -Raw $bootstrapScript | & ssh @sshArguments

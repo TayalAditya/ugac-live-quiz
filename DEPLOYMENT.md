@@ -1,7 +1,7 @@
 # UGAC Server Deployment
 
 The quiz is served at https://ugac.iitmandi.ac.in/quiz/. It is a single
-Flask-SocketIO process behind the UGAC server's existing HTTPS reverse proxy.
+Flask-SocketIO process behind the UGAC server's existing Caddy HTTPS proxy.
 
 The deployment branch is deploy/ugac in
 https://github.com/TayalAditya/ugac-live-quiz.
@@ -10,7 +10,7 @@ https://github.com/TayalAditya/ugac-live-quiz.
 
 1. Create a Neon database and copy its pooled PostgreSQL connection string.
 2. On the server, create a checkout directory separate from the UGAC website
-   files, for example /opt/ugac-live-quiz.
+   files, for example /home/ugcouncil_user/live-quiz.
 3. Copy .env.example to .env. Set APP_ENV=production, the Neon URL, and
    unique values for SECRET_KEY and ADMIN_PASSWORD.
 4. Ensure .env is readable only by the deployment account and is never
@@ -20,24 +20,38 @@ https://github.com/TayalAditya/ugac-live-quiz.
 
 From the quiz checkout on the UGAC server:
 
-    docker compose up -d --build
-    docker compose ps
+    docker compose -f docker-compose.yml -f docker-compose.ugac.yml up -d --build
+    docker compose -f docker-compose.yml -f docker-compose.ugac.yml ps
     curl http://127.0.0.1:5010/healthz
 
 The container is deliberately bound only to 127.0.0.1:5010. It cannot be
 reached directly from the internet.
 
-## Reverse Proxy
+## Caddy Route
 
-Add the two location blocks from deploy/nginx-quiz.conf to the existing HTTPS
-server block for ugac.iitmandi.ac.in, then validate before reloading:
+Add the block from deploy/caddy-quiz.caddy above the final SPA `handle` block
+in the existing Caddyfile for ugac.iitmandi.ac.in, then validate and reload:
 
-    sudo nginx -t
-    sudo systemctl reload nginx
+    docker exec ugac-frontend caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+    docker exec ugac-frontend caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 
-The Socket.IO route is separate because it needs WebSocket upgrade headers.
-The proxy also sends X-Forwarded-Prefix: /quiz, letting Flask generate links,
+The Caddy proxy forwards WebSocket upgrades automatically and sends
+X-Forwarded-Prefix: /quiz, letting Flask generate links,
 redirects, QR codes, form actions, and socket paths beneath /quiz/.
+
+The existing site container and quiz container share the external
+`ugac-internal` network; it is never necessary to expose the quiz directly to the
+internet.
+
+## Jump Host
+
+From a machine that cannot reach the UGAC private address directly, run:
+
+```powershell
+.\deploy\deploy-to-ugac.ps1 `
+  -HostName "172.22.100.12" -Port 2256 -UserName "ugcouncil_user" `
+  -JumpHost "172.16.5.185" -JumpUser "tayalji"
+```
 
 ## Smoke Test
 
@@ -54,7 +68,7 @@ Socket.IO connection to /quiz/socket.io/.
 ## Updating
 
     git pull --ff-only
-    docker compose up -d --build
+    docker compose -f docker-compose.yml -f docker-compose.ugac.yml up -d --build
     docker image prune -f
 
 Use one Gunicorn worker. The live leaderboard cache is held in process memory;

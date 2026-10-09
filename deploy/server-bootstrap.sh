@@ -3,7 +3,8 @@ set -Eeuo pipefail
 
 REPOSITORY_URL="${REPOSITORY_URL:-https://github.com/TayalAditya/ugac-live-quiz.git}"
 BRANCH="${BRANCH:-deploy/ugac}"
-APP_DIR="${APP_DIR:-$HOME/ugac-live-quiz}"
+APP_DIR="${APP_DIR:-$HOME/live-quiz}"
+UGAC_DOCKER_NETWORK="${UGAC_DOCKER_NETWORK:-ugac-internal}"
 
 require_command() {
     command -v "$1" >/dev/null 2>&1 || {
@@ -50,9 +51,14 @@ if grep -q 'replace-with-' .env || grep -q 'USER:PASSWORD@' .env; then
     exit 2
 fi
 
-compose_up up -d --build
-compose_up ps
+if ! docker network inspect "$UGAC_DOCKER_NETWORK" >/dev/null 2>&1; then
+    echo "Expected UGAC Docker network was not found: $UGAC_DOCKER_NETWORK" >&2
+    exit 1
+fi
+
+compose_up -f docker-compose.yml -f docker-compose.ugac.yml up -d --build
+compose_up -f docker-compose.yml -f docker-compose.ugac.yml ps
 curl --fail --silent --show-error http://127.0.0.1:5010/healthz
 echo
 echo "Quiz container is healthy on 127.0.0.1:5010."
-echo "Nginx still needs the /quiz/ reverse-proxy block from deploy/nginx-quiz.conf."
+echo "Caddy still needs the /quiz/ reverse-proxy block from deploy/caddy-quiz.caddy."
