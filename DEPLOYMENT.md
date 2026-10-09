@@ -3,6 +3,9 @@
 The quiz is served at https://ugac.iitmandi.ac.in/quiz/. It is a single
 Flask-SocketIO process behind the UGAC server's existing HTTPS reverse proxy.
 
+The deployment branch is deploy/ugac in
+https://github.com/TayalAditya/ugac-live-quiz.
+
 ## Before Deployment
 
 1. Create a Neon database and copy its pooled PostgreSQL connection string.

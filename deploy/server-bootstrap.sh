@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-REPOSITORY_URL="${REPOSITORY_URL:-https://github.com/ar-garg/Live_Q.git}"
+REPOSITORY_URL="${REPOSITORY_URL:-https://github.com/TayalAditya/ugac-live-quiz.git}"
 BRANCH="${BRANCH:-deploy/ugac}"
 APP_DIR="${APP_DIR:-$HOME/ugac-live-quiz}"
 

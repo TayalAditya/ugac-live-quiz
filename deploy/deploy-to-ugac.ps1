@@ -15,7 +15,7 @@ if (-not (Get-Command ssh -ErrorAction SilentlyContinue)) {
     throw 'OpenSSH client is not installed. Install it with: Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0'
 }
 
-$environmentArguments = "REPOSITORY_URL='https://github.com/ar-garg/Live_Q.git' BRANCH='$Branch'"
+$environmentArguments = "REPOSITORY_URL='https://github.com/TayalAditya/ugac-live-quiz.git' BRANCH='$Branch'"
 if ($RemoteDirectory) {
     $environmentArguments += " APP_DIR='$RemoteDirectory'"
 }
